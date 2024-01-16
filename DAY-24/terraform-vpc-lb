@@ -1,0 +1,254 @@
+------------------main.tf------------------------------------------
+
+
+resource "aws_vpc" "myvpc" {
+  cidr_block = var.vpc-cidr
+}
+resource "aws_subnet" "pubsub1" {
+  vpc_id                  = aws_vpc.myvpc.id
+  cidr_block              = "10.0.0.0/24"
+  availability_zone       = "ap-southeast-2a"
+  map_public_ip_on_launch = true
+}
+
+resource "aws_subnet" "pubsub2" {
+  vpc_id                  = aws_vpc.myvpc.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "ap-southeast-2b"
+  map_public_ip_on_launch = true
+}
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.myvpc.id
+}
+resource "aws_route_table" "RT" {
+  vpc_id = aws_vpc.myvpc.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+}
+resource "aws_route_table_association" "pubsub1" {
+  subnet_id      = aws_subnet.pubsub1.id
+  route_table_id = aws_route_table.RT.id
+}
+resource "aws_route_table_association" "pubsub2" {
+  subnet_id      = aws_subnet.pubsub2.id
+  route_table_id = aws_route_table.RT.id
+
+}
+resource "aws_security_group" "mysg" {
+  name_prefix = "web-sg"
+  vpc_id      = aws_vpc.myvpc.id
+  ingress {
+    description = "TLS from vpc"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    description = "HTTP from vpc"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+resource "aws_s3_bucket" "jyosna" {
+  bucket = "my-tf-jyosna-bucket"
+}
+
+resource "aws_s3_bucket_ownership_controls" "jyosna" {
+  bucket = aws_s3_bucket.jyosna.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "jyosna" {
+  bucket = aws_s3_bucket.jyosna.id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
+resource "aws_s3_bucket_acl" "jyosna" {
+  depends_on = [
+    aws_s3_bucket_ownership_controls.jyosna,
+    aws_s3_bucket_public_access_block.jyosna,
+  ]
+
+  bucket = aws_s3_bucket.jyosna.id
+  acl    = "public-read"
+}
+resource "aws_instance" "server1" {
+  ami                    = "ami-0f2967bce46537146"
+  instance_type          = "t2.micro"
+  vpc_security_group_ids = [aws_security_group.mysg.id]
+  subnet_id              = aws_subnet.pubsub1.id
+  user_data              = base64encode(file("userdata1.sh"))
+}
+resource "aws_instance" "server2" {
+  ami                    = "ami-0f2967bce46537146"
+  instance_type          = "t2.micro"
+  vpc_security_group_ids = [aws_security_group.mysg.id]
+  subnet_id              = aws_subnet.pubsub2.id
+  user_data              = base64encode(file("userdata2.sh"))
+}
+resource "aws_lb" "myalb" {
+  name               = "myalb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.mysg.id]
+  subnets            = [aws_subnet.pubsub1.id, aws_subnet.pubsub2.id]
+
+  tags = {
+    Name = "web"
+  }
+}
+resource "aws_lb_target_group" "tg" {
+  name     = "mytg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.myvpc.id
+
+  health_check {
+    path = "/"
+    port = "traffic-port"
+  }
+}
+resource "aws_lb_target_group_attachment" "attach1" {
+  target_group_arn = aws_lb_target_group.tg.arn
+  target_id        = aws_instance.server1.id
+  port             = 80
+}
+resource "aws_lb_target_group_attachment" "attach2" {
+  target_group_arn = aws_lb_target_group.tg.arn
+  target_id        = aws_instance.server2.id
+  port             = 80
+}
+resource "aws_lb_listener" "listener" {
+  load_balancer_arn = aws_lb.myalb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    target_group_arn = aws_lb_target_group.tg.arn
+    type             = "forward"
+  }
+}
+output "loadbalencer" {
+  value = aws_lb.myalb.dns_name
+}
+
+------------------terraform.tf------------------------------------------
+provider "aws" {
+  region = "ap-southeast-2"
+}
+
+------------------variable.tf------------------------------------------
+variable "vpc-cidr" {
+  default = "10.0.0.0/16"
+}
+------------------userdata1------------------------------------------
+#!/bin/bash
+apt update
+apt install -y apache2
+
+# Get the instance ID using the instance metadata
+INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+
+# Install the AWS CLI
+apt install -y awscli
+
+# Download the images from S3 bucket
+#aws s3 cp s3://myterraformprojectbucket2023/project.webp /var/www/html/project.png --acl public-read
+
+# Create a simple HTML file with the portfolio content and display the images
+cat <<EOF > /var/www/html/index.html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>My Portfolio</title>
+  <style>
+    /* Add animation and styling for the text */
+    @keyframes colorChange {
+      0% { color: red; }
+      50% { color: green; }
+      100% { color: blue; }
+    }
+    h1 {
+      animation: colorChange 2s infinite;
+    }
+  </style>
+</head>
+<body>
+  <h1>Terraform Project Server 1</h1>
+  <h2>Instance ID: <span style="color:green">$INSTANCE_ID</span></h2>
+  <p>Welcome to Abhishek Veeramalla's Channel</p>
+  
+</body>
+</html>
+EOF
+
+# Start Apache and enable it on boot
+systemctl start apache2
+systemctl enable apache2
+
+
+
+
+------------------userdata2------------------------------------------
+
+
+#!/bin/bash
+apt update
+apt install -y apache2
+
+# Get the instance ID using the instance metadata
+INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+
+# Install the AWS CLI
+apt install -y awscli
+
+# Download the images from S3 bucket
+#aws s3 cp s3://myterraformprojectbucket2023/project.webp /var/www/html/project.png --acl public-read
+
+# Create a simple HTML file with the portfolio content and display the images
+cat <<EOF > /var/www/html/index.html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>My Portfolio</title>
+  <style>
+    /* Add animation and styling for the text */
+    @keyframes colorChange {
+      0% { color: red; }
+      50% { color: green; }
+      100% { color: blue; }
+    }
+    h1 {
+      animation: colorChange 2s infinite;
+    }
+  </style>
+</head>
+<body>
+  <h1>Terraform Project Server 1</h1>
+  <h2>Instance ID: <span style="color:green">$INSTANCE_ID</span></h2>
+  <p>Welcome to CloudChamp's Channel</p>
+  
+</body>
+</html>
+EOF
+
+# Start Apache and enable it on boot
+systemctl start apache2
+systemctl enable apache2

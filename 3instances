@@ -1,0 +1,39 @@
+resource "aws_key_pair" "key" {
+  key_name   = "test"
+  public_key = file("~/.ssh/id_rsa.pub")
+}
+
+resource "aws_instance" "server1" {
+  ami           = "ami-04f5097681773b989"
+  instance_type = "t2.micro"
+  key_name      = aws_key_pair.key.key_name
+  tags = {
+    Name = "server1"
+  }
+}
+
+resource "aws_instance" "server2" {
+  ami           = "ami-04f5097681773b989"
+  instance_type = "t2.micro"
+  key_name      = aws_key_pair.key.key_name
+  tags = {
+    Name = "server2"
+  }
+}
+
+resource "aws_instance" "server3" {
+  ami           = "ami-04f5097681773b989"
+  instance_type = "t2.micro"
+  key_name      = aws_key_pair.key.key_name
+
+  tags = {
+    Name = "server3"
+  }
+}
+output "server_ips" {
+  value = [
+    aws_instance.server1.public_ip,
+    aws_instance.server2.public_ip,
+    aws_instance.server3.public_ip,
+  ]
+}
